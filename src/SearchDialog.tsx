@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo, memo } from "react";
 import {
   Box,
   Button,
@@ -45,12 +45,12 @@ interface Props {
 }
 
 interface SearchOption {
-  query?: string,
-  grades: number[],
-  days: string[],
-  times: number[],
-  majors: string[],
-  credits?: number,
+  query?: string;
+  grades: number[];
+  days: string[];
+  times: number[];
+  majors: string[];
+  credits?: number;
 }
 
 const TIME_SLOTS = [
@@ -82,99 +82,247 @@ const TIME_SLOTS = [
 
 const PAGE_SIZE = 100;
 
-const fetchMajors = () => axios.get<Lecture[]>('/schedules-majors.json');
-const fetchLiberalArts = () => axios.get<Lecture[]>('/schedules-liberal-arts.json');
+const fetchMajors = () => axios.get<Lecture[]>("/schedules-majors.json");
+const fetchLiberalArts = () =>
+  axios.get<Lecture[]>("/schedules-liberal-arts.json");
 
 // TODO: 이 코드를 개선해서 API 호출을 최소화 해보세요 + Promise.all이 현재 잘못 사용되고 있습니다. 같이 개선해주세요.
-const fetchAllLectures = async () => await Promise.all([
-  (console.log('API Call 1', performance.now()), await fetchMajors()),
-  (console.log('API Call 2', performance.now()), await fetchLiberalArts()),
-  (console.log('API Call 3', performance.now()), await fetchMajors()),
-  (console.log('API Call 4', performance.now()), await fetchLiberalArts()),
-  (console.log('API Call 5', performance.now()), await fetchMajors()),
-  (console.log('API Call 6', performance.now()), await fetchLiberalArts()),
-]);
+const createCachedFetch = <T,>(fetchFn: () => Promise<T>) => {
+  let cacheFn: Promise<T> | null = null;
+  return () => {
+    if (!cacheFn) {
+      cacheFn = fetchFn();
+    }
+    return cacheFn;
+  };
+};
 
-// TODO: 이 컴포넌트에서 불필요한 연산이 발생하지 않도록 다양한 방식으로 시도해주세요.
+const cachedFetchMajors = createCachedFetch(fetchMajors);
+const cachedFetchLiberalArts = createCachedFetch(fetchLiberalArts);
+
+const fetchAllLectures = async () => {
+  return await Promise.all([
+    (console.log("API Call 1", performance.now()), cachedFetchMajors()),
+    (console.log("API Call 2", performance.now()), cachedFetchLiberalArts()),
+    (console.log("API Call 3", performance.now()), cachedFetchMajors()),
+    (console.log("API Call 4", performance.now()), cachedFetchLiberalArts()),
+    (console.log("API Call 5", performance.now()), cachedFetchMajors()),
+    (console.log("API Call 6", performance.now()), cachedFetchLiberalArts()),
+  ]);
+};
+
+const MemoizedCheckboxItem = memo(
+  ({
+    id,
+    label,
+    isChecked,
+    onChange,
+  }: {
+    id: number | string;
+    label: string;
+    isChecked: boolean;
+    onChange: () => void;
+  }) => {
+    return (
+      <Box>
+        <Checkbox
+          size="sm"
+          value={id}
+          isChecked={isChecked}
+          onChange={onChange}
+        >
+          {label}
+        </Checkbox>
+      </Box>
+    );
+  }
+);
+
+const MemoizedLectureRow = memo(
+  ({
+    lecture,
+    onAdd,
+  }: {
+    lecture: Lecture;
+    onAdd: (lecture: Lecture) => void;
+  }) => {
+    return (
+      <Tr>
+        <Td width="100px">{lecture.id}</Td>
+        <Td width="50px">{lecture.grade}</Td>
+        <Td width="200px">{lecture.title}</Td>
+        <Td width="50px">{lecture.credits}</Td>
+        <Td width="150px" dangerouslySetInnerHTML={{ __html: lecture.major }} />
+        <Td
+          width="150px"
+          dangerouslySetInnerHTML={{ __html: lecture.schedule }}
+        />
+        <Td width="80px">
+          <Button size="sm" colorScheme="green" onClick={() => onAdd(lecture)}>
+            추가
+          </Button>
+        </Td>
+      </Tr>
+    );
+  }
+);
+
 const SearchDialog = ({ searchInfo, onClose }: Props) => {
-  const { setSchedulesMap } = useScheduleContext();
+  const { updateSchedule, getSchedules } = useScheduleContext();
+
+  const formRef = useRef<{
+    query: HTMLInputElement | null;
+    credits: HTMLSelectElement | null;
+    grades: Set<number>;
+    days: Set<string>;
+    times: Set<number>;
+    majors: Set<string>;
+  }>({
+    query: null,
+    credits: null,
+    grades: new Set(),
+    days: new Set(),
+    times: new Set(),
+    majors: new Set(),
+  });
 
   const loaderWrapperRef = useRef<HTMLDivElement>(null);
   const loaderRef = useRef<HTMLDivElement>(null);
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [page, setPage] = useState(1);
   const [searchOptions, setSearchOptions] = useState<SearchOption>({
-    query: '',
+    query: "",
     grades: [],
     days: [],
     times: [],
     majors: [],
   });
 
-  const getFilteredLectures = () => {
-    const { query = '', credits, grades, days, times, majors } = searchOptions;
+  const filteredLectures = useMemo(() => {
+    const { query = "", credits, grades, days, times, majors } = searchOptions;
     return lectures
-      .filter(lecture =>
-        lecture.title.toLowerCase().includes(query.toLowerCase()) ||
-        lecture.id.toLowerCase().includes(query.toLowerCase())
+      .filter(
+        (lecture) =>
+          lecture.title.toLowerCase().includes(query.toLowerCase()) ||
+          lecture.id.toLowerCase().includes(query.toLowerCase())
       )
-      .filter(lecture => grades.length === 0 || grades.includes(lecture.grade))
-      .filter(lecture => majors.length === 0 || majors.includes(lecture.major))
-      .filter(lecture => !credits || lecture.credits.startsWith(String(credits)))
-      .filter(lecture => {
+      .filter(
+        (lecture) => grades.length === 0 || grades.includes(lecture.grade)
+      )
+      .filter(
+        (lecture) => majors.length === 0 || majors.includes(lecture.major)
+      )
+      .filter(
+        (lecture) => !credits || lecture.credits.startsWith(String(credits))
+      )
+      .filter((lecture) => {
         if (days.length === 0) {
           return true;
         }
-        const schedules = lecture.schedule ? parseSchedule(lecture.schedule) : [];
-        return schedules.some(s => days.includes(s.day));
+        const schedules = lecture.schedule
+          ? parseSchedule(lecture.schedule)
+          : [];
+        return schedules.some((s) => days.includes(s.day));
       })
-      .filter(lecture => {
+      .filter((lecture) => {
         if (times.length === 0) {
           return true;
         }
-        const schedules = lecture.schedule ? parseSchedule(lecture.schedule) : [];
-        return schedules.some(s => s.range.some(time => times.includes(time)));
+        const schedules = lecture.schedule
+          ? parseSchedule(lecture.schedule)
+          : [];
+        return schedules.some((s) =>
+          s.range.some((time) => times.includes(time))
+        );
       });
-  }
+  }, [lectures, searchOptions]);
 
-  const filteredLectures = getFilteredLectures();
-  const lastPage = Math.ceil(filteredLectures.length / PAGE_SIZE);
-  const visibleLectures = filteredLectures.slice(0, page * PAGE_SIZE);
-  const allMajors = [...new Set(lectures.map(lecture => lecture.major))];
+  const lastPage = useMemo(
+    () => Math.ceil(filteredLectures.length / PAGE_SIZE),
+    [filteredLectures.length]
+  );
 
-  const changeSearchOption = (field: keyof SearchOption, value: SearchOption[typeof field]) => {
+  const visibleLectures = useMemo(
+    () => filteredLectures.slice(0, page * PAGE_SIZE),
+    [filteredLectures, page]
+  );
+
+  const allMajors = useMemo(
+    () => [...new Set(lectures.map((lecture) => lecture.major))],
+    [lectures]
+  );
+
+  const handleSearch = useCallback(() => {
+    const formValues = formRef.current;
+    if (!formValues) return;
+
     setPage(1);
-    setSearchOptions(({ ...searchOptions, [field]: value }));
+    setSearchOptions({
+      query: formValues.query?.value || "",
+      credits: formValues.credits ? Number(formValues.credits?.value) : 0,
+      grades: Array.from(formValues.grades),
+      days: Array.from(formValues.days),
+      times: Array.from(formValues.times),
+      majors: Array.from(formValues.majors),
+    });
+
     loaderWrapperRef.current?.scrollTo(0, 0);
-  };
+  }, []);
 
-  const addSchedule = (lecture: Lecture) => {
-    if (!searchInfo) return;
+  const handleCheckboxChange = useCallback(
+    (
+      setName: "grades" | "days" | "times" | "majors",
+      value: number | string,
+      checked: boolean
+    ) => {
+      const set = formRef.current[setName];
+      if (checked) {
+        set.add(value as never);
+      } else {
+        set.delete(value as never);
+      }
+      handleSearch();
+    },
+    [handleSearch]
+  );
 
-    const { tableId } = searchInfo;
+  const removeTag = useCallback(
+    (setName: "times" | "majors", value: number | string) => {
+      const set = formRef.current[setName];
+      set.delete(value as never);
+      handleSearch();
+    },
+    [handleSearch]
+  );
 
-    const schedules = parseSchedule(lecture.schedule).map(schedule => ({
-      ...schedule,
-      lecture
-    }));
+  const addSchedule = useCallback(
+    (lecture: Lecture) => {
+      if (!searchInfo) return;
 
-    setSchedulesMap(prev => ({
-      ...prev,
-      [tableId]: [...prev[tableId], ...schedules]
-    }));
+      const { tableId } = searchInfo;
+      const currentSchedules = getSchedules(tableId);
 
-    onClose();
-  };
+      const schedules = parseSchedule(lecture.schedule).map((schedule) => ({
+        ...schedule,
+        lecture,
+      }));
+
+      updateSchedule(tableId, [...currentSchedules, ...schedules]);
+
+      onClose();
+    },
+    [searchInfo, getSchedules, updateSchedule, onClose]
+  );
 
   useEffect(() => {
     const start = performance.now();
-    console.log('API 호출 시작: ', start)
-    fetchAllLectures().then(results => {
+    console.log("API 호출 시작: ", start);
+    fetchAllLectures().then((results) => {
       const end = performance.now();
-      console.log('모든 API 호출 완료 ', end)
-      console.log('API 호출에 걸린 시간(ms): ', end - start)
-      setLectures(results.flatMap(result => result.data));
-    })
+      console.log("모든 API 호출 완료 ", end);
+      console.log("API 호출에 걸린 시간(ms): ", end - start);
+      setLectures(results.flatMap((result) => result.data));
+    });
   }, []);
 
   useEffect(() => {
@@ -186,9 +334,9 @@ const SearchDialog = ({ searchInfo, onClose }: Props) => {
     }
 
     const observer = new IntersectionObserver(
-      entries => {
+      (entries) => {
         if (entries[0].isIntersecting) {
-          setPage(prevPage => Math.min(lastPage, prevPage + 1));
+          setPage((prevPage) => Math.min(lastPage, prevPage + 1));
         }
       },
       { threshold: 0, root: $loaderWrapper }
@@ -200,20 +348,27 @@ const SearchDialog = ({ searchInfo, onClose }: Props) => {
   }, [lastPage]);
 
   useEffect(() => {
-    setSearchOptions(prev => ({
-      ...prev,
-      days: searchInfo?.day ? [searchInfo.day] : [],
-      times: searchInfo?.time ? [searchInfo.time] : [],
-    }))
-    setPage(1);
-  }, [searchInfo]);
+    if (searchInfo?.day) {
+      formRef.current.days = new Set([searchInfo.day]);
+    } else {
+      formRef.current.days = new Set();
+    }
+
+    if (searchInfo?.time) {
+      formRef.current.times = new Set([searchInfo.time]);
+    } else {
+      formRef.current.times = new Set();
+    }
+
+    handleSearch();
+  }, [searchInfo, handleSearch]);
 
   return (
     <Modal isOpen={Boolean(searchInfo)} onClose={onClose} size="6xl">
-      <ModalOverlay/>
+      <ModalOverlay />
       <ModalContent maxW="90vw" w="1000px">
         <ModalHeader>수업 검색</ModalHeader>
-        <ModalCloseButton/>
+        <ModalCloseButton />
         <ModalBody>
           <VStack spacing={4} align="stretch">
             <HStack spacing={4}>
@@ -221,16 +376,18 @@ const SearchDialog = ({ searchInfo, onClose }: Props) => {
                 <FormLabel>검색어</FormLabel>
                 <Input
                   placeholder="과목명 또는 과목코드"
-                  value={searchOptions.query}
-                  onChange={(e) => changeSearchOption('query', e.target.value)}
+                  ref={(el) => (formRef.current.query = el)}
+                  defaultValue={searchOptions.query}
+                  onChange={handleSearch}
                 />
               </FormControl>
 
               <FormControl>
                 <FormLabel>학점</FormLabel>
                 <Select
-                  value={searchOptions.credits}
-                  onChange={(e) => changeSearchOption('credits', e.target.value)}
+                  ref={(el) => (formRef.current.credits = el)}
+                  defaultValue={searchOptions.credits}
+                  onChange={handleSearch}
                 >
                   <option value="">전체</option>
                   <option value="1">1학점</option>
@@ -243,13 +400,23 @@ const SearchDialog = ({ searchInfo, onClose }: Props) => {
             <HStack spacing={4}>
               <FormControl>
                 <FormLabel>학년</FormLabel>
-                <CheckboxGroup
-                  value={searchOptions.grades}
-                  onChange={(value) => changeSearchOption('grades', value.map(Number))}
-                >
+                <CheckboxGroup value={Array.from(formRef.current.grades)}>
                   <HStack spacing={4}>
-                    {[1, 2, 3, 4].map(grade => (
-                      <Checkbox key={grade} value={grade}>{grade}학년</Checkbox>
+                    {[1, 2, 3, 4].map((grade) => (
+                      <Checkbox
+                        key={grade}
+                        value={grade}
+                        isChecked={formRef.current.grades.has(grade)}
+                        onChange={(e) =>
+                          handleCheckboxChange(
+                            "grades",
+                            grade,
+                            e.target.checked
+                          )
+                        }
+                      >
+                        {grade}학년
+                      </Checkbox>
                     ))}
                   </HStack>
                 </CheckboxGroup>
@@ -257,13 +424,19 @@ const SearchDialog = ({ searchInfo, onClose }: Props) => {
 
               <FormControl>
                 <FormLabel>요일</FormLabel>
-                <CheckboxGroup
-                  value={searchOptions.days}
-                  onChange={(value) => changeSearchOption('days', value as string[])}
-                >
+                <CheckboxGroup value={Array.from(formRef.current.days)}>
                   <HStack spacing={4}>
-                    {DAY_LABELS.map(day => (
-                      <Checkbox key={day} value={day}>{day}</Checkbox>
+                    {DAY_LABELS.map((day) => (
+                      <Checkbox
+                        key={day}
+                        value={day}
+                        isChecked={formRef.current.days.has(day)}
+                        onChange={(e) =>
+                          handleCheckboxChange("days", day, e.target.checked)
+                        }
+                      >
+                        {day}
+                      </Checkbox>
                     ))}
                   </HStack>
                 </CheckboxGroup>
@@ -275,26 +448,48 @@ const SearchDialog = ({ searchInfo, onClose }: Props) => {
                 <FormLabel>시간</FormLabel>
                 <CheckboxGroup
                   colorScheme="green"
-                  value={searchOptions.times}
-                  onChange={(values) => changeSearchOption('times', values.map(Number))}
+                  value={Array.from(formRef.current.times)}
                 >
                   <Wrap spacing={1} mb={2}>
-                    {searchOptions.times.sort((a, b) => a - b).map(time => (
-                      <Tag key={time} size="sm" variant="outline" colorScheme="blue">
-                        <TagLabel>{time}교시</TagLabel>
-                        <TagCloseButton
-                          onClick={() => changeSearchOption('times', searchOptions.times.filter(v => v !== time))}/>
-                      </Tag>
-                    ))}
+                    {Array.from(formRef.current.times)
+                      .sort((a: number, b: number) => a - b)
+                      .map((time) => (
+                        <Tag
+                          key={time}
+                          size="sm"
+                          variant="outline"
+                          colorScheme="blue"
+                        >
+                          <TagLabel>{time}교시</TagLabel>
+                          <TagCloseButton
+                            onClick={() => removeTag("times", time)}
+                          />
+                        </Tag>
+                      ))}
                   </Wrap>
-                  <Stack spacing={2} overflowY="auto" h="100px" border="1px solid" borderColor="gray.200"
-                         borderRadius={5} p={2}>
+                  <Stack
+                    spacing={2}
+                    overflowY="auto"
+                    h="100px"
+                    border="1px solid"
+                    borderColor="gray.200"
+                    borderRadius={5}
+                    p={2}
+                  >
                     {TIME_SLOTS.map(({ id, label }) => (
-                      <Box key={id}>
-                        <Checkbox key={id} size="sm" value={id}>
-                          {id}교시({label})
-                        </Checkbox>
-                      </Box>
+                      <MemoizedCheckboxItem
+                        key={id}
+                        id={id}
+                        label={`${id}교시(${label})`}
+                        isChecked={formRef.current.times.has(id)}
+                        onChange={() =>
+                          handleCheckboxChange(
+                            "times",
+                            id,
+                            !formRef.current.times.has(id)
+                          )
+                        }
+                      />
                     ))}
                   </Stack>
                 </CheckboxGroup>
@@ -304,34 +499,52 @@ const SearchDialog = ({ searchInfo, onClose }: Props) => {
                 <FormLabel>전공</FormLabel>
                 <CheckboxGroup
                   colorScheme="green"
-                  value={searchOptions.majors}
-                  onChange={(values) => changeSearchOption('majors', values as string[])}
+                  value={Array.from(formRef.current.majors)}
                 >
                   <Wrap spacing={1} mb={2}>
-                    {searchOptions.majors.map(major => (
-                      <Tag key={major} size="sm" variant="outline" colorScheme="blue">
-                        <TagLabel>{major.split("<p>").pop()}</TagLabel>
+                    {Array.from(formRef.current.majors).map((major) => (
+                      <Tag
+                        key={major}
+                        size="sm"
+                        variant="outline"
+                        colorScheme="blue"
+                      >
+                        <TagLabel>{String(major).split("<p>").pop()}</TagLabel>
                         <TagCloseButton
-                          onClick={() => changeSearchOption('majors', searchOptions.majors.filter(v => v !== major))}/>
+                          onClick={() => removeTag("majors", major)}
+                        />
                       </Tag>
                     ))}
                   </Wrap>
-                  <Stack spacing={2} overflowY="auto" h="100px" border="1px solid" borderColor="gray.200"
-                         borderRadius={5} p={2}>
-                    {allMajors.map(major => (
-                      <Box key={major}>
-                        <Checkbox key={major} size="sm" value={major}>
-                          {major.replace(/<p>/gi, ' ')}
-                        </Checkbox>
-                      </Box>
+                  <Stack
+                    spacing={2}
+                    overflowY="auto"
+                    h="100px"
+                    border="1px solid"
+                    borderColor="gray.200"
+                    borderRadius={5}
+                    p={2}
+                  >
+                    {allMajors.map((major) => (
+                      <MemoizedCheckboxItem
+                        key={major}
+                        id={major}
+                        label={major.replace(/<p>/gi, " ")}
+                        isChecked={formRef.current.majors.has(major)}
+                        onChange={() =>
+                          handleCheckboxChange(
+                            "majors",
+                            major,
+                            !formRef.current.majors.has(major)
+                          )
+                        }
+                      />
                     ))}
                   </Stack>
                 </CheckboxGroup>
               </FormControl>
             </HStack>
-            <Text align="right">
-              검색결과: {filteredLectures.length}개
-            </Text>
+            <Text align="right">검색결과: {filteredLectures.length}개</Text>
             <Box>
               <Table>
                 <Thead>
@@ -351,21 +564,15 @@ const SearchDialog = ({ searchInfo, onClose }: Props) => {
                 <Table size="sm" variant="striped">
                   <Tbody>
                     {visibleLectures.map((lecture, index) => (
-                      <Tr key={`${lecture.id}-${index}`}>
-                        <Td width="100px">{lecture.id}</Td>
-                        <Td width="50px">{lecture.grade}</Td>
-                        <Td width="200px">{lecture.title}</Td>
-                        <Td width="50px">{lecture.credits}</Td>
-                        <Td width="150px" dangerouslySetInnerHTML={{ __html: lecture.major }}/>
-                        <Td width="150px" dangerouslySetInnerHTML={{ __html: lecture.schedule }}/>
-                        <Td width="80px">
-                          <Button size="sm" colorScheme="green" onClick={() => addSchedule(lecture)}>추가</Button>
-                        </Td>
-                      </Tr>
+                      <MemoizedLectureRow
+                        key={`${lecture.id}-${index}`}
+                        lecture={lecture}
+                        onAdd={addSchedule}
+                      />
                     ))}
                   </Tbody>
                 </Table>
-                <Box ref={loaderRef} h="20px"/>
+                <Box ref={loaderRef} h="20px" />
               </Box>
             </Box>
           </VStack>
