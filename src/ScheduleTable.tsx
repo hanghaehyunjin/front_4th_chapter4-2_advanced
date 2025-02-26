@@ -206,7 +206,10 @@ const DraggableSchedule = memo(
             <Text fontSize="xs">{room}</Text>
           </Box>
         </PopoverTrigger>
-        <PopoverContent onClick={(event) => event.stopPropagation()}>
+        <PopoverContent
+          onClick={(event) => event.stopPropagation()}
+          rootProps={{ style: { zIndex: 20 } }}
+        >
           <PopoverArrow />
           <PopoverCloseButton />
           <PopoverBody>
